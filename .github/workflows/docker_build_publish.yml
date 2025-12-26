@@ -3,7 +3,7 @@ name: Build & Publish Docker image
 on:
   push:
     branches:
-      - main
+      - release-10.11.z
   workflow_dispatch:
   repository_dispatch:
 
