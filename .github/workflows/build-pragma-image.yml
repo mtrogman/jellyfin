@@ -2,6 +2,13 @@ name: Build & Push Jellyfin (pragma test)
 
 on:
   workflow_dispatch:
+  push:
+    branches:
+      - "trog/sqlite-pragmas-10.11.5"
+  pull_request:
+    branches:
+      - "trog/sqlite-pragmas-10.11.5"
+
 
 env:
   # Change if you want a different repo name under your DockerHub namespace
