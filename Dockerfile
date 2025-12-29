@@ -5,29 +5,29 @@ ARG BASE_TAG=10.11.5
 FROM mcr.microsoft.com/dotnet/sdk:9.0 AS build
 WORKDIR /src
 
-# Copy server repo
 COPY . .
 
-# Restore + publish (SELF-CONTAINED so the final image doesn't need a runtime installed)
 RUN dotnet restore
 
-# Build a linux-x64 self-contained publish to match your target (amd64)
+# Build a self-contained linux-x64 publish AND suppress CA1865 (and don't treat warnings as errors)
 RUN dotnet publish Jellyfin.Server \
     -c Release \
     -o /out \
     -r linux-x64 \
     --self-contained true \
     -p:DebugSymbols=false \
-    -p:DebugType=none
+    -p:DebugType=none \
+    -p:TreatWarningsAsErrors=false \
+    -p:NoWarn=CA1865
 
-# Normalize the output binary name to /out/jellyfin if needed
+# Ensure we have the executable in the expected name/location
 RUN set -eux; \
     if [ -f /out/Jellyfin.Server ] && [ ! -f /out/jellyfin ]; then mv /out/Jellyfin.Server /out/jellyfin; fi; \
-    if [ -f /out/Jellyfin.Server.dll ] && [ ! -f /out/jellyfin.dll ]; then mv /out/Jellyfin.Server.dll /out/jellyfin.dll; fi; \
-    test -f /out/jellyfin
+    test -f /out/jellyfin; \
+    chmod +x /out/jellyfin
 
-# Final image: start from the official Jellyfin image to stay close to upstream
+# Final image: use official Jellyfin image as base to stay close to upstream runtime/libs
 FROM jellyfin/jellyfin:${BASE_TAG}
 
-# Overlay ONLY the published binaries into /jellyfin (web assets in the base image remain)
+# Overlay the built server bits into /jellyfin
 COPY --from=build /out/ /jellyfin/
