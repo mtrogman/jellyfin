@@ -14,8 +14,7 @@ namespace Jellyfin.Database.Providers.Sqlite;
 
 /// <summary>
 /// Injects a series of PRAGMA on each connection open.
-/// Supports optional extra PRAGMAs loaded from a well-known file (default: /config/pragmas.sql)
-/// and executes them per-connection (pool-safe).
+/// Supports optional extra PRAGMAs loaded from a well-known file and executes them per-connection (pool-safe).
 /// </summary>
 public class PragmaConnectionInterceptor : DbConnectionInterceptor
 {
@@ -191,25 +190,16 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
                 return val?.ToString();
             }
 
-            var journalMode = Get("journal_mode");
-            var synchronous = Get("synchronous");
-            var tempStore = Get("temp_store");
-            var cacheSize = Get("cache_size");
-            var mmapSize = Get("mmap_size");
-            var cacheSpill = Get("cache_spill");
-            var threads = Get("threads");
-            var walAutoCheckpoint = Get("wal_autocheckpoint");
-
             _logger.LogInformation(
                 "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
-                journalMode,
-                synchronous,
-                tempStore,
-                cacheSize,
-                mmapSize,
-                cacheSpill,
-                threads,
-                walAutoCheckpoint);
+                Get("journal_mode"),
+                Get("synchronous"),
+                Get("temp_store"),
+                Get("cache_size"),
+                Get("mmap_size"),
+                Get("cache_spill"),
+                Get("threads"),
+                Get("wal_autocheckpoint"));
         }
         catch (Exception ex)
         {
@@ -239,25 +229,16 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
                 }
             }
 
-            var journalMode = await GetAsync("journal_mode").ConfigureAwait(false);
-            var synchronous = await GetAsync("synchronous").ConfigureAwait(false);
-            var tempStore = await GetAsync("temp_store").ConfigureAwait(false);
-            var cacheSize = await GetAsync("cache_size").ConfigureAwait(false);
-            var mmapSize = await GetAsync("mmap_size").ConfigureAwait(false);
-            var cacheSpill = await GetAsync("cache_spill").ConfigureAwait(false);
-            var threads = await GetAsync("threads").ConfigureAwait(false);
-            var walAutoCheckpoint = await GetAsync("wal_autocheckpoint").ConfigureAwait(false);
-
             _logger.LogInformation(
                 "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
-                journalMode,
-                synchronous,
-                tempStore,
-                cacheSize,
-                mmapSize,
-                cacheSpill,
-                threads,
-                walAutoCheckpoint);
+                await GetAsync("journal_mode").ConfigureAwait(false),
+                await GetAsync("synchronous").ConfigureAwait(false),
+                await GetAsync("temp_store").ConfigureAwait(false),
+                await GetAsync("cache_size").ConfigureAwait(false),
+                await GetAsync("mmap_size").ConfigureAwait(false),
+                await GetAsync("cache_spill").ConfigureAwait(false),
+                await GetAsync("threads").ConfigureAwait(false),
+                await GetAsync("wal_autocheckpoint").ConfigureAwait(false));
         }
         catch (Exception ex)
         {
@@ -298,7 +279,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
     /// Loads extra PRAGMA statements from:
     /// - env var: JELLYFIN_SQLITE_PRAGMAS (semicolon separated)
     /// - env var: JELLYFIN_SQLITE_PRAGMAS_FILE (path to a file)
-    /// - auto-discovered default file(s) (no env required)
+    /// - auto-discovered default files near the XML config directory and data directory
     /// </summary>
     private static IReadOnlyList<string> LoadExtraPragmas(ILogger logger)
     {
@@ -324,7 +305,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
             return Array.Empty<string>();
         }
 
-        // 3) Auto-discover default file(s) (no env required)
+        // 3) Auto-discover: prioritize CONFIG dir (where XML lives), then DATA dir, then well-known fallbacks
         foreach (var candidate in GetDefaultPragmaFileCandidates())
         {
             var fromFile = TryReadFile(logger, candidate, logWhenMissing: false);
@@ -338,18 +319,78 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
         return Array.Empty<string>();
     }
 
+    /// <summary>
+    /// Finds candidates in the most compatible order:
+    /// 1) JELLYFIN_CONFIG_DIR (official image: /config/config)  <-- where XML config is
+    /// 2) JELLYFIN_DATA_DIR   (official image: /config)
+    /// 3) Common container paths (linuxserver/custom): /config/config, /conf/config, /config
+    /// </summary>
     private static IEnumerable<string> GetDefaultPragmaFileCandidates()
     {
-        var dataDir = Environment.GetEnvironmentVariable("JELLYFIN_DATA_DIR");
-        if (string.IsNullOrWhiteSpace(dataDir))
+        // Prefer config dir first (the "XML folder")
+        var configDir = Environment.GetEnvironmentVariable("JELLYFIN_CONFIG_DIR");
+        if (!string.IsNullOrWhiteSpace(configDir))
         {
-            dataDir = "/config";
+            foreach (var p in CandidatesInDir(configDir))
+            {
+                yield return p;
+            }
+
+            // Also check parent of configDir (common: /config/config -> /config)
+            var parent = SafeGetParent(configDir);
+            if (!string.IsNullOrWhiteSpace(parent))
+            {
+                foreach (var p in CandidatesInDir(parent))
+                {
+                    yield return p;
+                }
+            }
         }
 
-        yield return Path.Combine(dataDir, "pragmas.sql");
-        yield return Path.Combine(dataDir, "sqlite-pragmas.sql");
-        yield return Path.Combine(dataDir, "config", "pragmas.sql");
-        yield return Path.Combine(dataDir, "config", "sqlite-pragmas.sql");
+        // Then data dir
+        var dataDir = Environment.GetEnvironmentVariable("JELLYFIN_DATA_DIR");
+        if (!string.IsNullOrWhiteSpace(dataDir))
+        {
+            foreach (var p in CandidatesInDir(dataDir))
+            {
+                yield return p;
+            }
+        }
+
+        // Finally, known defaults for popular images / layouts
+        foreach (var p in CandidatesInDir("/config/config"))
+        {
+            yield return p;
+        }
+
+        foreach (var p in CandidatesInDir("/conf/config")) // in case you truly have /conf/config
+        {
+            yield return p;
+        }
+
+        foreach (var p in CandidatesInDir("/config"))
+        {
+            yield return p;
+        }
+    }
+
+    private static IEnumerable<string> CandidatesInDir(string dir)
+    {
+        // Keep it simple: allow either "pragmas.sql" or "sqlite-pragmas.sql"
+        yield return Path.Combine(dir, "pragmas.sql");
+        yield return Path.Combine(dir, "sqlite-pragmas.sql");
+    }
+
+    private static string? SafeGetParent(string path)
+    {
+        try
+        {
+            return Directory.GetParent(path)?.FullName;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     private static string? TryReadFile(ILogger logger, string path, bool logWhenMissing)

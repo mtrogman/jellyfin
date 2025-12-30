@@ -1,4 +1,4 @@
-name: Build & Publish Jellyfin Docker image (pragma tuning)
+name: Build & Push Jellyfin Docker (pragma tuning)
 
 on:
   push:
@@ -9,6 +9,10 @@ on:
 permissions:
   contents: read
 
+concurrency:
+  group: jellyfin-docker-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   build-and-push:
     runs-on: ubuntu-latest
@@ -17,19 +21,12 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set image tags
-        id: tags
+      - name: Set vars
         shell: bash
         run: |
-          VERSION="10.11.5"
-          SHORT_SHA="${GITHUB_SHA::7}"
-
-          echo "VERSION=$VERSION" >> $GITHUB_ENV
-          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
-
-          echo "TAG_VERSIONED=mtrogman/jellyfin:${VERSION}-pragma-tuning" >> $GITHUB_ENV
-          echo "TAG_MOVING=mtrogman/jellyfin:pragma-tuning" >> $GITHUB_ENV
-          echo "TAG_SHA=mtrogman/jellyfin:sha-${SHORT_SHA}" >> $GITHUB_ENV
+          echo "IMAGE_NAME=mtrogman/jellyfin" >> $GITHUB_ENV
+          echo "IMAGE_TAG=10.11.5-pragma-tuning" >> $GITHUB_ENV
+          echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
@@ -43,18 +40,19 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: Build and push (linux/amd64)
+      - name: Build and push
         uses: docker/build-push-action@v5
         with:
-          push: true
           context: .
           file: ./Dockerfile
-          platforms: linux/amd64
+          push: true
+          # If you only care about amd64 for your lab, change to: linux/amd64
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            JELLYFIN_BASE_TAG=10.11.5
+            DOTNET_SDK_TAG=9.0
           tags: |
-            ${{ env.TAG_VERSIONED }}
-            ${{ env.TAG_MOVING }}
-            ${{ env.TAG_SHA }}
-          labels: |
-            org.opencontainers.image.source=${{ github.repository }}
-            org.opencontainers.image.revision=${{ github.sha }}
-            org.opencontainers.image.version=${{ env.VERSION }}
+            ${{ env.IMAGE_NAME }}:${{ env.IMAGE_TAG }}
+            ${{ env.IMAGE_NAME }}:sha-${{ env.SHORT_SHA }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
