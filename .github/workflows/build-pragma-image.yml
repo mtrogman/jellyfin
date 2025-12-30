@@ -25,23 +25,11 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # If you have global.json (Jellyfin does), install exactly what it requests.
-      # This avoids the “compatible SDK not found” / exit 145 situation. :contentReference[oaicite:2]{index=2}
-      - name: Setup .NET from global.json (if present)
-        if: ${{ hashFiles('global.json') != '' }}
+      - name: Setup .NET from global.json
         uses: actions/setup-dotnet@v4
         with:
           global-json-file: global.json
-
-      # Fallback if no global.json exists (keeps workflow resilient)
-      - name: Setup .NET fallback
-        if: ${{ hashFiles('global.json') == '' }}
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
 
       - name: Dotnet info (debug)
         run: |
@@ -51,13 +39,11 @@ jobs:
       - name: Cache NuGet
         uses: actions/cache@v4
         with:
-          path: |
-            ~/.nuget/packages
+          path: ~/.nuget/packages
           key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', 'global.json', 'NuGet.config') }}
           restore-keys: |
             nuget-${{ runner.os }}-
 
-      # Publish your fork’s Jellyfin.Server to ./out (self-contained linux-x64)
       - name: Publish Jellyfin.Server -> ./out
         run: |
           rm -rf out
