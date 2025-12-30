@@ -27,6 +27,9 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private readonly IReadOnlyList<string> _extraPragmaStatements;
 
+    // Log the effective pragma values once per process start (avoid noisy logs)
+    private static int _pragmaVerifyLogged;
+
     /// <summary>
     /// Initializes a new instance of the <see cref="PragmaConnectionInterceptor"/> class.
     /// </summary>
@@ -126,6 +129,9 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
             cmd.ExecuteNonQuery();
         }
+
+        // Definitive proof: log effective values from the SAME connection after applying
+        LogEffectivePragmasOnce(connection);
     }
 
     private async Task ExecuteExtraPragmasAsync(DbConnection connection, CancellationToken cancellationToken)
@@ -145,6 +151,107 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 #pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
                 await cmd.ExecuteNonQueryAsync(cancellationToken).ConfigureAwait(false);
             }
+        }
+
+        // Definitive proof: log effective values from the SAME connection after applying
+        await LogEffectivePragmasOnceAsync(connection, cancellationToken).ConfigureAwait(false);
+    }
+
+    private void LogEffectivePragmasOnce(DbConnection connection)
+    {
+        if (Interlocked.Exchange(ref _pragmaVerifyLogged, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            using var cmd = connection.CreateCommand();
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+            cmd.CommandText = @"
+PRAGMA journal_mode;
+PRAGMA synchronous;
+PRAGMA temp_store;
+PRAGMA cache_size;
+PRAGMA mmap_size;
+PRAGMA cache_spill;
+PRAGMA threads;
+PRAGMA wal_autocheckpoint;";
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+
+            using var reader = cmd.ExecuteReader();
+            var results = new List<string>();
+            while (reader.Read())
+            {
+                results.Add(reader.GetValue(0)?.ToString() ?? "<null>");
+            }
+
+            _logger.LogInformation(
+                "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
+                results.ElementAtOrDefault(0),
+                results.ElementAtOrDefault(1),
+                results.ElementAtOrDefault(2),
+                results.ElementAtOrDefault(3),
+                results.ElementAtOrDefault(4),
+                results.ElementAtOrDefault(5),
+                results.ElementAtOrDefault(6),
+                results.ElementAtOrDefault(7));
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SQLite PRAGMA verify failed");
+        }
+    }
+
+    private async Task LogEffectivePragmasOnceAsync(DbConnection connection, CancellationToken cancellationToken)
+    {
+        if (Interlocked.Exchange(ref _pragmaVerifyLogged, 1) != 0)
+        {
+            return;
+        }
+
+        try
+        {
+            var cmd = connection.CreateCommand();
+            await using (cmd.ConfigureAwait(false))
+            {
+#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
+                cmd.CommandText = @"
+PRAGMA journal_mode;
+PRAGMA synchronous;
+PRAGMA temp_store;
+PRAGMA cache_size;
+PRAGMA mmap_size;
+PRAGMA cache_spill;
+PRAGMA threads;
+PRAGMA wal_autocheckpoint;";
+#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
+
+                var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
+                await using (reader.ConfigureAwait(false))
+                {
+                    var results = new List<string>();
+                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
+                    {
+                        results.Add(reader.GetValue(0)?.ToString() ?? "<null>");
+                    }
+
+                    _logger.LogInformation(
+                        "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
+                        results.ElementAtOrDefault(0),
+                        results.ElementAtOrDefault(1),
+                        results.ElementAtOrDefault(2),
+                        results.ElementAtOrDefault(3),
+                        results.ElementAtOrDefault(4),
+                        results.ElementAtOrDefault(5),
+                        results.ElementAtOrDefault(6),
+                        results.ElementAtOrDefault(7));
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            _logger.LogWarning(ex, "SQLite PRAGMA verify failed");
         }
     }
 
