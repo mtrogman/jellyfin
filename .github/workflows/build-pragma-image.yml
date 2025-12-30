@@ -1,66 +1,56 @@
-name: Build & Push Jellyfin (pragma test)
+name: Build Jellyfin Docker Image
 
 on:
-  workflow_dispatch:
   push:
     branches:
-      - "trog/sqlite-pragmas-10.11.5"
+      - "**"
   pull_request:
-    branches:
-      - "trog/sqlite-pragmas-10.11.5"
 
-
-env:
-  # Change if you want a different repo name under your DockerHub namespace
-  IMAGE_NAME: jellyfin
-  BASE_TAG: "10.11.5"
-  PLATFORMS: linux/amd64
+permissions:
+  contents: read
+  packages: write
 
 jobs:
-  build:
+  docker:
     runs-on: ubuntu-latest
 
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-
-      - name: Set tags
-        shell: bash
-        run: |
-          set -euo pipefail
-          TS="$(date -u +%Y%m%d%H%M)"
-          SHORT_SHA="${GITHUB_SHA::10}"
-
-          echo "TS=${TS}" >> "${GITHUB_ENV}"
-          echo "SHORT_SHA=${SHORT_SHA}" >> "${GITHUB_ENV}"
-
-          echo "FULL_TAG=v${BASE_TAG}-pragma-${TS}" >> "${GITHUB_ENV}"
-          echo "LATEST_TAG=v${BASE_TAG}-pragma-latest" >> "${GITHUB_ENV}"
-
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
+        with:
+          fetch-depth: 0
 
       - name: Set up Buildx
         uses: docker/setup-buildx-action@v3
 
-      - name: Login to DockerHub
+      - name: Login to GHCR
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_TOKEN }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Build & push
-        uses: docker/build-push-action@v5
+      - name: Docker metadata
+        id: meta
+        uses: docker/metadata-action@v5
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/jellyfin
+          tags: |
+            type=ref,event=branch
+            type=sha,format=short
+
+      - name: Build (and push on push events)
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: ./Dockerfile
-          platforms: ${{ env.PLATFORMS }}
-          push: true
+          platforms: linux/amd64
+          push: ${{ github.event_name == 'push' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
           build-args: |
-            BASE_TAG=${{ env.BASE_TAG }}
-          tags: |
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.FULL_TAG }}
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.FULL_TAG }}-${{ env.SHORT_SHA }}
-            ${{ secrets.DOCKER_USERNAME }}/${{ env.IMAGE_NAME }}:${{ env.LATEST_TAG }}
+            BASE_IMAGE=jellyfin/jellyfin:10.11.5
+            DOTNET_SDK_VERSION=8.0
           cache-from: type=gha
           cache-to: type=gha,mode=max
+          provenance: false
