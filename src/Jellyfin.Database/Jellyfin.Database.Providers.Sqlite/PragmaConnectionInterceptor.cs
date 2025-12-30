@@ -56,7 +56,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
         InitialCommand = BuildCommandText();
 
-        // Load extra pragmas from env/file. These are executed per-connection (pool-safe).
+        // Load extra pragmas from env/file/auto-discovered default file. Executed per-connection (pool-safe).
         _extraPragmaStatements = LoadExtraPragmas(_logger);
 
         _logger.LogInformation("SQLITE connection pragma command set to: \r\n{PragmaCommand}", InitialCommand);
@@ -180,42 +180,105 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
     /// <summary>
     /// Loads extra PRAGMA statements from:
     /// - env var: JELLYFIN_SQLITE_PRAGMAS (semicolon separated)
-    /// - file:    JELLYFIN_SQLITE_PRAGMAS_FILE (raw text; semicolon separated; supports SQL-style comments)
+    /// - env var: JELLYFIN_SQLITE_PRAGMAS_FILE (path to a file)
+    /// - auto-discovered default file(s) (no env required):
+    ///   {JELLYFIN_DATA_DIR}/pragmas.sql (and a couple alternates)
     /// </summary>
     private static IReadOnlyList<string> LoadExtraPragmas(ILogger logger)
     {
-        // Env var containing PRAGMA statements or simple "key=value" entries separated by semicolons.
+        // 1) Direct env var (highest priority)
         var raw = Environment.GetEnvironmentVariable("JELLYFIN_SQLITE_PRAGMAS");
-
-        // Optional file path containing statements (recommended for easy tuning without rebuild).
-        var filePath = Environment.GetEnvironmentVariable("JELLYFIN_SQLITE_PRAGMAS_FILE");
-
-        if (string.IsNullOrWhiteSpace(raw) && !string.IsNullOrWhiteSpace(filePath))
+        if (!string.IsNullOrWhiteSpace(raw))
         {
-            try
-            {
-                if (File.Exists(filePath))
-                {
-                    raw = File.ReadAllText(filePath);
-                }
-                else
-                {
-                    logger.LogWarning("JELLYFIN_SQLITE_PRAGMAS_FILE was set but file does not exist: {Path}", filePath);
-                }
-            }
-            catch (Exception ex)
-            {
-                logger.LogWarning(ex, "Failed to read JELLYFIN_SQLITE_PRAGMAS_FILE: {Path}", filePath);
-            }
+            logger.LogInformation("Loading SQLite extra PRAGMAs from env var JELLYFIN_SQLITE_PRAGMAS.");
+            return ParsePragmaStatements(logger, raw);
         }
 
-        if (string.IsNullOrWhiteSpace(raw))
+        // 2) Env var file path override
+        var filePath = Environment.GetEnvironmentVariable("JELLYFIN_SQLITE_PRAGMAS_FILE");
+        if (!string.IsNullOrWhiteSpace(filePath))
         {
+            var fromFile = TryReadFile(logger, filePath, logWhenMissing: true);
+            if (!string.IsNullOrWhiteSpace(fromFile))
+            {
+                logger.LogInformation("Loading SQLite extra PRAGMAs from JELLYFIN_SQLITE_PRAGMAS_FILE: {Path}", filePath);
+                return ParsePragmaStatements(logger, fromFile);
+            }
+
             return Array.Empty<string>();
         }
 
-        // Strip common comment-only lines.
-        // We keep it simple: remove full-line comments starting with -- or #.
+        // 3) Auto-discover default file(s) (no env required)
+        foreach (var candidate in GetDefaultPragmaFileCandidates())
+        {
+            var fromFile = TryReadFile(logger, candidate, logWhenMissing: false);
+            if (!string.IsNullOrWhiteSpace(fromFile))
+            {
+                logger.LogInformation("Loading SQLite extra PRAGMAs from default file: {Path}", candidate);
+                return ParsePragmaStatements(logger, fromFile);
+            }
+        }
+
+        return Array.Empty<string>();
+    }
+
+    private static IEnumerable<string> GetDefaultPragmaFileCandidates()
+    {
+        // Official image layout sets JELLYFIN_DATA_DIR=/config, but we also provide a fallback.
+        var dataDir = Environment.GetEnvironmentVariable("JELLYFIN_DATA_DIR");
+        if (string.IsNullOrWhiteSpace(dataDir))
+        {
+            dataDir = "/config";
+        }
+
+        // Primary: /config/pragmas.sql
+        yield return Path.Combine(dataDir, "pragmas.sql");
+
+        // Alternates (optional but convenient)
+        yield return Path.Combine(dataDir, "sqlite-pragmas.sql");
+        yield return Path.Combine(dataDir, "config", "pragmas.sql");
+        yield return Path.Combine(dataDir, "config", "sqlite-pragmas.sql");
+    }
+
+    private static string? TryReadFile(ILogger logger, string path, bool logWhenMissing)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                if (logWhenMissing)
+                {
+                    logger.LogWarning("SQLite PRAGMA file was set but does not exist: {Path}", path);
+                }
+
+                return null;
+            }
+
+            // Guardrail: don’t allow huge files
+            var info = new FileInfo(path);
+            const long maxBytes = 256 * 1024; // 256KB
+            if (info.Length > maxBytes)
+            {
+                logger.LogWarning(
+                    "SQLite PRAGMA file is too large ({Size} bytes). Max allowed is {Max} bytes. Ignoring: {Path}",
+                    info.Length,
+                    maxBytes,
+                    path);
+                return null;
+            }
+
+            return File.ReadAllText(path);
+        }
+        catch (Exception ex)
+        {
+            logger.LogWarning(ex, "Failed to read SQLite PRAGMA file: {Path}", path);
+            return null;
+        }
+    }
+
+    private static IReadOnlyList<string> ParsePragmaStatements(ILogger logger, string raw)
+    {
+        // Strip comment-only lines + blank lines
         var lines = raw.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
             .Select(l => l.Trim())
             .Where(l => !string.IsNullOrWhiteSpace(l))
@@ -243,7 +306,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
                 continue;
             }
 
-            // Ensure it ends with ';'
+            // Ensure it ends with ';' (CA1865: use char overload)
             if (!stmt.EndsWith(';'))
             {
                 stmt += ";";
@@ -260,7 +323,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private static bool IsFullLineComment(string line)
     {
-        // CA1865: use char overloads where possible
+        // CA1865: use char overload where applicable
         if (line.StartsWith('#'))
         {
             return true;
