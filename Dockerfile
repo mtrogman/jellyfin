@@ -1,35 +1,48 @@
 # syntax=docker/dockerfile:1.7
 
-# Use the official Jellyfin image as the runtime base (brings web + ffmpeg + deps)
-ARG BASE_IMAGE=jellyfin/jellyfin:10.11.5
+##
+## Build stage: compile your fork
+##
+ARG DOTNET_SDK_TAG=8.0-bookworm-slim
+FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_SDK_TAG} AS build
 
-# Match the server branch's TargetFramework (10.11.x is typically .NET 8; master may be newer)
-ARG DOTNET_SDK_VERSION=8.0
+ENV DOTNET_CLI_TELEMETRY_OPTOUT=1 \
+    NUGET_XMLDOC_MODE=skip \
+    DOTNET_NOLOGO=1
 
-FROM mcr.microsoft.com/dotnet/sdk:${DOTNET_SDK_VERSION}-bookworm-slim AS build
 WORKDIR /src
-
-# copy your fork source
 COPY . .
 
-# (optional) restore explicitly for linux-x64 to match publish RID
-RUN dotnet restore Jellyfin.Server --runtime linux-x64
+# Optional but VERY useful when builds fail:
+# Shows which SDK is actually being used.
+RUN dotnet --info
 
-# build/publish server
-RUN dotnet publish Jellyfin.Server \
-    -c Release \
-    -o /out \
-    -r linux-x64 \
-    --self-contained true \
-    -p:DebugSymbols=false \
-    -p:DebugType=none
+# Cache NuGet packages between builds
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet restore Jellyfin.Server --runtime linux-x64
 
-# Runtime layer: keep everything from official image, override only the entrypoint binary set
-FROM ${BASE_IMAGE} AS runtime
+# Publish self-contained server for linux-x64
+RUN --mount=type=cache,target=/root/.nuget/packages \
+    dotnet publish Jellyfin.Server \
+      -c Release \
+      -o /out \
+      -r linux-x64 \
+      --self-contained true \
+      -p:DebugSymbols=false \
+      -p:DebugType=none
 
-# Put your build somewhere that won't clobber base image layout
-COPY --from=build /out /jellyfin-custom
-RUN chmod +x /jellyfin-custom/jellyfin
+##
+## Runtime stage: start from the official Jellyfin image and replace /jellyfin with your build output
+##
+ARG RUNTIME_IMAGE=jellyfin/jellyfin:10.11.5
+FROM ${RUNTIME_IMAGE} AS runtime
 
-# Keep base env vars (JELLYFIN_* dirs, web dir, etc.) and just run your binary
-ENTRYPOINT ["/jellyfin-custom/jellyfin", "--ffmpeg", "/usr/lib/jellyfin-ffmpeg/ffmpeg"]
+# Overlay your fork’s server binaries onto the official image path.
+# (The official image expects Jellyfin binaries under /jellyfin.)
+COPY --from=build /out/ /jellyfin/
+
+# Ensure the binary is executable
+RUN chmod +x /jellyfin/jellyfin
+
+# DO NOT set ENTRYPOINT/CMD here.
+# We keep the official image’s entrypoint behavior intact.
