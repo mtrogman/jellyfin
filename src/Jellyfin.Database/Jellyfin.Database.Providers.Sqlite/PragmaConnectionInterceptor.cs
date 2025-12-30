@@ -30,16 +30,6 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
     // Log the effective pragma values once per process start (avoid noisy logs)
     private static int _pragmaVerifyLogged;
 
-    /// <summary>
-    /// Initializes a new instance of the <see cref="PragmaConnectionInterceptor"/> class.
-    /// </summary>
-    /// <param name="logger">The logger.</param>
-    /// <param name="cacheSize">Cache size.</param>
-    /// <param name="lockingMode">Locking mode.</param>
-    /// <param name="journalSizeLimit">Journal Size.</param>
-    /// <param name="tempStoreMode">The https://sqlite.org/pragma.html#pragma_temp_store pragma.</param>
-    /// <param name="syncMode">The https://sqlite.org/pragma.html#pragma_synchronous pragma.</param>
-    /// <param name="customPragma">A list of custom provided Pragma in the list of CustomOptions starting with "#PRAGMA:".</param>
     public PragmaConnectionInterceptor(
         ILogger logger,
         int? cacheSize,
@@ -75,7 +65,6 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private string? InitialCommand { get; set; }
 
-    /// <inheritdoc/>
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
         base.ConnectionOpened(connection, eventData);
@@ -84,7 +73,6 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
         ExecuteExtraPragmas(connection);
     }
 
-    /// <inheritdoc/>
     public override async Task ConnectionOpenedAsync(DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
     {
         await base.ConnectionOpenedAsync(connection, eventData, cancellationToken).ConfigureAwait(false);
@@ -166,36 +154,35 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
         try
         {
-            using var cmd = connection.CreateCommand();
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-            cmd.CommandText = @"
-PRAGMA journal_mode;
-PRAGMA synchronous;
-PRAGMA temp_store;
-PRAGMA cache_size;
-PRAGMA mmap_size;
-PRAGMA cache_spill;
-PRAGMA threads;
-PRAGMA wal_autocheckpoint;";
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-
-            using var reader = cmd.ExecuteReader();
-            var results = new List<string>();
-            while (reader.Read())
+            string? Get(string pragma)
             {
-                results.Add(reader.GetValue(0)?.ToString() ?? "<null>");
+                using var cmd = connection.CreateCommand();
+#pragma warning disable CA2100
+                cmd.CommandText = $"PRAGMA {pragma};";
+#pragma warning restore CA2100
+                var val = cmd.ExecuteScalar();
+                return val?.ToString();
             }
+
+            var journalMode = Get("journal_mode");
+            var synchronous = Get("synchronous");
+            var tempStore = Get("temp_store");
+            var cacheSize = Get("cache_size");
+            var mmapSize = Get("mmap_size");
+            var cacheSpill = Get("cache_spill");
+            var threads = Get("threads");
+            var walAutoCheckpoint = Get("wal_autocheckpoint");
 
             _logger.LogInformation(
                 "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
-                results.ElementAtOrDefault(0),
-                results.ElementAtOrDefault(1),
-                results.ElementAtOrDefault(2),
-                results.ElementAtOrDefault(3),
-                results.ElementAtOrDefault(4),
-                results.ElementAtOrDefault(5),
-                results.ElementAtOrDefault(6),
-                results.ElementAtOrDefault(7));
+                journalMode,
+                synchronous,
+                tempStore,
+                cacheSize,
+                mmapSize,
+                cacheSpill,
+                threads,
+                walAutoCheckpoint);
         }
         catch (Exception ex)
         {
@@ -212,42 +199,38 @@ PRAGMA wal_autocheckpoint;";
 
         try
         {
-            var cmd = connection.CreateCommand();
-            await using (cmd.ConfigureAwait(false))
+            async Task<string?> GetAsync(string pragma)
             {
-#pragma warning disable CA2100 // Review SQL queries for security vulnerabilities
-                cmd.CommandText = @"
-PRAGMA journal_mode;
-PRAGMA synchronous;
-PRAGMA temp_store;
-PRAGMA cache_size;
-PRAGMA mmap_size;
-PRAGMA cache_spill;
-PRAGMA threads;
-PRAGMA wal_autocheckpoint;";
-#pragma warning restore CA2100 // Review SQL queries for security vulnerabilities
-
-                var reader = await cmd.ExecuteReaderAsync(cancellationToken).ConfigureAwait(false);
-                await using (reader.ConfigureAwait(false))
+                var cmd = connection.CreateCommand();
+                await using (cmd.ConfigureAwait(false))
                 {
-                    var results = new List<string>();
-                    while (await reader.ReadAsync(cancellationToken).ConfigureAwait(false))
-                    {
-                        results.Add(reader.GetValue(0)?.ToString() ?? "<null>");
-                    }
-
-                    _logger.LogInformation(
-                        "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
-                        results.ElementAtOrDefault(0),
-                        results.ElementAtOrDefault(1),
-                        results.ElementAtOrDefault(2),
-                        results.ElementAtOrDefault(3),
-                        results.ElementAtOrDefault(4),
-                        results.ElementAtOrDefault(5),
-                        results.ElementAtOrDefault(6),
-                        results.ElementAtOrDefault(7));
+#pragma warning disable CA2100
+                    cmd.CommandText = $"PRAGMA {pragma};";
+#pragma warning restore CA2100
+                    var val = await cmd.ExecuteScalarAsync(cancellationToken).ConfigureAwait(false);
+                    return val?.ToString();
                 }
             }
+
+            var journalMode = await GetAsync("journal_mode").ConfigureAwait(false);
+            var synchronous = await GetAsync("synchronous").ConfigureAwait(false);
+            var tempStore = await GetAsync("temp_store").ConfigureAwait(false);
+            var cacheSize = await GetAsync("cache_size").ConfigureAwait(false);
+            var mmapSize = await GetAsync("mmap_size").ConfigureAwait(false);
+            var cacheSpill = await GetAsync("cache_spill").ConfigureAwait(false);
+            var threads = await GetAsync("threads").ConfigureAwait(false);
+            var walAutoCheckpoint = await GetAsync("wal_autocheckpoint").ConfigureAwait(false);
+
+            _logger.LogInformation(
+                "SQLite PRAGMA verify (same Jellyfin connection, after apply): journal_mode={JournalMode}, synchronous={Synchronous}, temp_store={TempStore}, cache_size={CacheSize}, mmap_size={MmapSize}, cache_spill={CacheSpill}, threads={Threads}, wal_autocheckpoint={WalAutoCheckpoint}",
+                journalMode,
+                synchronous,
+                tempStore,
+                cacheSize,
+                mmapSize,
+                cacheSpill,
+                threads,
+                walAutoCheckpoint);
         }
         catch (Exception ex)
         {
