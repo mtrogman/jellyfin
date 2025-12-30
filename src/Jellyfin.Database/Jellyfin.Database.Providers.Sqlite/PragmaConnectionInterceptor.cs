@@ -13,7 +13,9 @@ using Microsoft.Extensions.Logging;
 namespace Jellyfin.Database.Providers.Sqlite;
 
 /// <summary>
-/// Injects a series of PRAGMA on each connection starts.
+/// Injects a series of PRAGMA on each connection open.
+/// Supports optional extra PRAGMAs loaded from a well-known file (default: /config/pragmas.sql)
+/// and executes them per-connection (pool-safe).
 /// </summary>
 public class PragmaConnectionInterceptor : DbConnectionInterceptor
 {
@@ -30,6 +32,16 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
     // Log the effective pragma values once per process start (avoid noisy logs)
     private static int _pragmaVerifyLogged;
 
+    /// <summary>
+    /// Initializes a new instance of the <see cref="PragmaConnectionInterceptor"/> class.
+    /// </summary>
+    /// <param name="logger">Logger instance.</param>
+    /// <param name="cacheSize">The PRAGMA cache_size value to apply (if any).</param>
+    /// <param name="lockingMode">The PRAGMA locking_mode value to apply (if any).</param>
+    /// <param name="journalSizeLimit">The PRAGMA journal_size_limit value to apply (if any).</param>
+    /// <param name="tempStoreMode">The PRAGMA temp_store value to apply.</param>
+    /// <param name="syncMode">The PRAGMA synchronous value to apply.</param>
+    /// <param name="customPragma">Additional custom pragmas.</param>
     public PragmaConnectionInterceptor(
         ILogger logger,
         int? cacheSize,
@@ -65,6 +77,11 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private string? InitialCommand { get; set; }
 
+    /// <summary>
+    /// Called when a database connection has been opened.
+    /// </summary>
+    /// <param name="connection">The opened connection.</param>
+    /// <param name="eventData">Event data.</param>
     public override void ConnectionOpened(DbConnection connection, ConnectionEndEventData eventData)
     {
         base.ConnectionOpened(connection, eventData);
@@ -73,7 +90,17 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
         ExecuteExtraPragmas(connection);
     }
 
-    public override async Task ConnectionOpenedAsync(DbConnection connection, ConnectionEndEventData eventData, CancellationToken cancellationToken = default)
+    /// <summary>
+    /// Called when a database connection has been opened (async).
+    /// </summary>
+    /// <param name="connection">The opened connection.</param>
+    /// <param name="eventData">Event data.</param>
+    /// <param name="cancellationToken">Cancellation token.</param>
+    /// <returns>A task representing the async operation.</returns>
+    public override async Task ConnectionOpenedAsync(
+        DbConnection connection,
+        ConnectionEndEventData eventData,
+        CancellationToken cancellationToken = default)
     {
         await base.ConnectionOpenedAsync(connection, eventData, cancellationToken).ConfigureAwait(false);
 
@@ -271,8 +298,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
     /// Loads extra PRAGMA statements from:
     /// - env var: JELLYFIN_SQLITE_PRAGMAS (semicolon separated)
     /// - env var: JELLYFIN_SQLITE_PRAGMAS_FILE (path to a file)
-    /// - auto-discovered default file(s) (no env required):
-    ///   {JELLYFIN_DATA_DIR}/pragmas.sql (and a couple alternates)
+    /// - auto-discovered default file(s) (no env required)
     /// </summary>
     private static IReadOnlyList<string> LoadExtraPragmas(ILogger logger)
     {
@@ -314,17 +340,13 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private static IEnumerable<string> GetDefaultPragmaFileCandidates()
     {
-        // Official image layout sets JELLYFIN_DATA_DIR=/config, but we also provide a fallback.
         var dataDir = Environment.GetEnvironmentVariable("JELLYFIN_DATA_DIR");
         if (string.IsNullOrWhiteSpace(dataDir))
         {
             dataDir = "/config";
         }
 
-        // Primary: /config/pragmas.sql
         yield return Path.Combine(dataDir, "pragmas.sql");
-
-        // Alternates (optional but convenient)
         yield return Path.Combine(dataDir, "sqlite-pragmas.sql");
         yield return Path.Combine(dataDir, "config", "pragmas.sql");
         yield return Path.Combine(dataDir, "config", "sqlite-pragmas.sql");
@@ -344,9 +366,8 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
                 return null;
             }
 
-            // Guardrail: don’t allow huge files
             var info = new FileInfo(path);
-            const long maxBytes = 256 * 1024; // 256KB
+            const long maxBytes = 256 * 1024; // 256KB guardrail
             if (info.Length > maxBytes)
             {
                 logger.LogWarning(
@@ -368,7 +389,6 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private static IReadOnlyList<string> ParsePragmaStatements(ILogger logger, string raw)
     {
-        // Strip comment-only lines + blank lines
         var lines = raw.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
             .Select(l => l.Trim())
             .Where(l => !string.IsNullOrWhiteSpace(l))
@@ -377,7 +397,6 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
         var normalized = string.Join("\n", lines);
 
-        // Split into statements by ';'
         var parts = normalized.Split(';')
             .Select(p => p.Trim())
             .Where(p => !string.IsNullOrWhiteSpace(p))
@@ -386,17 +405,14 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
         var statements = new List<string>(parts.Count);
         foreach (var p in parts)
         {
-            // Allow either "PRAGMA foo=bar" OR "foo=bar"
             var stmt = p.StartsWith("PRAGMA", StringComparison.OrdinalIgnoreCase) ? p : $"PRAGMA {p}";
 
-            // Only allow PRAGMA commands (safety)
             if (!stmt.StartsWith("PRAGMA", StringComparison.OrdinalIgnoreCase))
             {
                 logger.LogWarning("Ignoring non-PRAGMA SQLite statement from extra pragmas: {Statement}", p);
                 continue;
             }
 
-            // Ensure it ends with ';' (CA1865: use char overload)
             if (!stmt.EndsWith(';'))
             {
                 stmt += ";";
@@ -405,7 +421,6 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
             statements.Add(stmt);
         }
 
-        // Deduplicate while preserving order
         return statements
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToList();
@@ -413,14 +428,11 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
 
     private static bool IsFullLineComment(string line)
     {
-        // CA1865: use char overload where applicable
         if (line.StartsWith('#'))
         {
             return true;
         }
 
-        // SQL comment: "-- ..."
-        // Avoid StartsWith("--") string overload by checking 2 chars.
         return line.Length >= 2 && line[0] == '-' && line[1] == '-';
     }
 }
