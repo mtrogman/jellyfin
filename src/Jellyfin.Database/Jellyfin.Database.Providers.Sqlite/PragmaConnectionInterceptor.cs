@@ -214,13 +214,12 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
             return Array.Empty<string>();
         }
 
-        // Strip common comment-only lines (we still allow inline comments; SQLite itself ignores them poorly in PRAGMA,
-        // so we keep it simple and remove full-line comments).
+        // Strip common comment-only lines.
+        // We keep it simple: remove full-line comments starting with -- or #.
         var lines = raw.Split(new[] { "\r\n", "\n" }, StringSplitOptions.None)
             .Select(l => l.Trim())
             .Where(l => !string.IsNullOrWhiteSpace(l))
-            .Where(l => !l.StartsWith("--", StringComparison.Ordinal))
-            .Where(l => !l.StartsWith("#", StringComparison.Ordinal))
+            .Where(l => !IsFullLineComment(l))
             .ToArray();
 
         var normalized = string.Join("\n", lines);
@@ -245,7 +244,7 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
             }
 
             // Ensure it ends with ';'
-            if (!stmt.EndsWith(";", StringComparison.Ordinal))
+            if (!stmt.EndsWith(';'))
             {
                 stmt += ";";
             }
@@ -254,7 +253,21 @@ public class PragmaConnectionInterceptor : DbConnectionInterceptor
         }
 
         // Deduplicate while preserving order
-        var deduped = statements.Distinct(StringComparer.OrdinalIgnoreCase).ToList();
-        return deduped;
+        return statements
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private static bool IsFullLineComment(string line)
+    {
+        // CA1865: use char overloads where possible
+        if (line.StartsWith('#'))
+        {
+            return true;
+        }
+
+        // SQL comment: "-- ..."
+        // Avoid StartsWith("--") string overload by checking 2 chars.
+        return line.Length >= 2 && line[0] == '-' && line[1] == '-';
     }
 }
