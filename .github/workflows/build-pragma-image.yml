@@ -1,14 +1,13 @@
-name: Build & Publish Jellyfin Docker image
+name: Build & Publish Jellyfin Docker image (pragma tuning)
 
 on:
   push:
     branches:
-      - "**"
+      - trog/sqlite-pragmas-10.11.5
   workflow_dispatch:
 
 permissions:
   contents: read
-  packages: write
 
 jobs:
   build-and-push:
@@ -17,65 +16,26 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
 
-      # --- Publish Jellyfin.Server to ./out on the runner (avoids dotnet-in-docker issues) ---
-      - name: Setup .NET from global.json (if present)
-        if: ${{ hashFiles('global.json') != '' }}
-        uses: actions/setup-dotnet@v4
-        with:
-          global-json-file: global.json
-
-      - name: Setup .NET fallback (if no global.json)
-        if: ${{ hashFiles('global.json') == '' }}
-        uses: actions/setup-dotnet@v4
-        with:
-          dotnet-version: "8.0.x"
-
-      - name: Dotnet info (debug)
+      - name: Set image tags
+        id: tags
+        shell: bash
         run: |
-          dotnet --info
-          dotnet --list-sdks
+          VERSION="10.11.5"
+          SHORT_SHA="${GITHUB_SHA::7}"
 
-      - name: Cache NuGet
-        uses: actions/cache@v4
-        with:
-          path: ~/.nuget/packages
-          key: nuget-${{ runner.os }}-${{ hashFiles('**/*.csproj', '**/*.props', '**/*.targets', 'global.json', 'NuGet.config') }}
-          restore-keys: |
-            nuget-${{ runner.os }}-
+          echo "VERSION=$VERSION" >> $GITHUB_ENV
+          echo "SHORT_SHA=$SHORT_SHA" >> $GITHUB_ENV
 
-      - name: Publish Jellyfin.Server -> ./out
-        run: |
-          rm -rf out
-          dotnet restore Jellyfin.Server --runtime linux-x64
-          dotnet publish Jellyfin.Server \
-            -c Release \
-            -o out \
-            -r linux-x64 \
-            --self-contained true \
-            -p:DebugSymbols=false \
-            -p:DebugType=none
+          echo "TAG_VERSIONED=mtrogman/jellyfin:${VERSION}-pragma-tuning" >> $GITHUB_ENV
+          echo "TAG_MOVING=mtrogman/jellyfin:pragma-tuning" >> $GITHUB_ENV
+          echo "TAG_SHA=mtrogman/jellyfin:sha-${SHORT_SHA}" >> $GITHUB_ENV
 
-      # --- Docker build/push ---
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
 
       - name: Set up Docker Buildx
         uses: docker/setup-buildx-action@v3
-
-      - name: Compute tags
-        id: tags
-        shell: bash
-        run: |
-          # Lowercase + replace anything not allowed in docker tags with '-'
-          BRANCH="${GITHUB_REF_NAME}"
-          SAFE_BRANCH="$(echo "${BRANCH}" | tr '[:upper:]' '[:lower:]' | sed -E 's/[^a-z0-9._-]+/-/g')"
-          SHORT_SHA="$(echo "${GITHUB_SHA}" | cut -c1-7)"
-
-          echo "SAFE_BRANCH=${SAFE_BRANCH}" >> $GITHUB_OUTPUT
-          echo "SHORT_SHA=${SHORT_SHA}" >> $GITHUB_OUTPUT
 
       - name: Login to DockerHub
         uses: docker/login-action@v3
@@ -83,26 +43,18 @@ jobs:
           username: ${{ secrets.DOCKER_USERNAME }}
           password: ${{ secrets.DOCKER_TOKEN }}
 
-      - name: Login to GHCR
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Build and push images
-        uses: docker/build-push-action@v6
+      - name: Build and push (linux/amd64)
+        uses: docker/build-push-action@v5
         with:
           push: true
-          platforms: linux/amd64,linux/arm64
           context: .
           file: ./Dockerfile
-          build-args: |
-            RUNTIME_IMAGE=jellyfin/jellyfin:10.11.5
+          platforms: linux/amd64
           tags: |
-            mtrogman/jellyfin:${{ steps.tags.outputs.SAFE_BRANCH }}
-            mtrogman/jellyfin:${{ steps.tags.outputs.SHORT_SHA }}
-            ghcr.io/${{ github.repository_owner }}/jellyfin:${{ steps.tags.outputs.SAFE_BRANCH }}
-            ghcr.io/${{ github.repository_owner }}/jellyfin:${{ steps.tags.outputs.SHORT_SHA }}
-            ${{ github.ref_name == 'main' && format('mtrogman/jellyfin:latest{0}', '') || '' }}
-            ${{ github.ref_name == 'main' && format('ghcr.io/{0}/jellyfin:latest', github.repository_owner) || '' }}
+            ${{ env.TAG_VERSIONED }}
+            ${{ env.TAG_MOVING }}
+            ${{ env.TAG_SHA }}
+          labels: |
+            org.opencontainers.image.source=${{ github.repository }}
+            org.opencontainers.image.revision=${{ github.sha }}
+            org.opencontainers.image.version=${{ env.VERSION }}
