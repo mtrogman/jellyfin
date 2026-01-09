@@ -409,17 +409,24 @@ public sealed class BaseItemRepository
         var enableGroupByPresentationUniqueKey = EnableGroupByPresentationUniqueKey(filter);
         if (enableGroupByPresentationUniqueKey && filter.GroupBySeriesPresentationUniqueKey)
         {
-            var tempQuery = dbQuery.GroupBy(e => new { e.PresentationUniqueKey, e.SeriesPresentationUniqueKey }).Select(e => e.FirstOrDefault()).Select(e => e!.Id);
+            // Project to ID before FirstOrDefault to avoid loading full entity including Data blob
+            var tempQuery = dbQuery
+                .GroupBy(e => new { e.PresentationUniqueKey, e.SeriesPresentationUniqueKey })
+                .Select(g => g.Select(e => e.Id).FirstOrDefault());
             dbQuery = context.BaseItems.Where(e => tempQuery.Contains(e.Id));
         }
         else if (enableGroupByPresentationUniqueKey)
         {
-            var tempQuery = dbQuery.GroupBy(e => e.PresentationUniqueKey).Select(e => e.FirstOrDefault()).Select(e => e!.Id);
+            var tempQuery = dbQuery
+                .GroupBy(e => e.PresentationUniqueKey)
+                .Select(g => g.Select(e => e.Id).FirstOrDefault());
             dbQuery = context.BaseItems.Where(e => tempQuery.Contains(e.Id));
         }
         else if (filter.GroupBySeriesPresentationUniqueKey)
         {
-            var tempQuery = dbQuery.GroupBy(e => e.SeriesPresentationUniqueKey).Select(e => e.FirstOrDefault()).Select(e => e!.Id);
+            var tempQuery = dbQuery
+                .GroupBy(e => e.SeriesPresentationUniqueKey)
+                .Select(g => g.Select(e => e.Id).FirstOrDefault());
             dbQuery = context.BaseItems.Where(e => tempQuery.Contains(e.Id));
         }
         else
@@ -451,7 +458,16 @@ public sealed class BaseItemRepository
 
         if (filter.DtoOptions.EnableUserData)
         {
-            dbQuery = dbQuery.Include(e => e.UserData);
+            // Use filtered include to only load the current user's data instead of all users' data
+            if (filter.User is not null)
+            {
+                var userId = filter.User.Id;
+                dbQuery = dbQuery.Include(e => e.UserData!.Where(ud => ud.UserId == userId));
+            }
+            else
+            {
+                dbQuery = dbQuery.Include(e => e.UserData);
+            }
         }
 
         if (filter.DtoOptions.EnableImages)
@@ -1295,18 +1311,14 @@ public sealed class BaseItemRepository
             IsSeries = filter.IsSeries
         });
 
-        var itemValuesQuery = context.ItemValues
-            .Where(f => itemValueTypes.Contains(f.Type))
-            .SelectMany(f => f.BaseItemsMap!, (f, w) => new { f, w })
-            .Join(
-                innerQueryFilter,
-                fw => fw.w.ItemId,
-                g => g.Id,
-                (fw, g) => fw.f.CleanValue);
-
+        // Use Any() with inline predicate instead of Contains() on subquery
+        // This keeps the entire query server-side and prevents client-side evaluation
         var innerQuery = PrepareItemQuery(context, filter)
             .Where(e => e.Type == returnType)
-            .Where(e => itemValuesQuery.Contains(e.CleanName));
+            .Where(e => context.ItemValuesMap
+                .Where(ivm => itemValueTypes.Contains(ivm.ItemValue.Type))
+                .Where(ivm => innerQueryFilter.Any(g => g.Id == ivm.ItemId))
+                .Any(ivm => ivm.ItemValue.CleanValue == e.CleanName));
 
         var outerQueryFilter = new InternalItemsQuery(filter.User)
         {
@@ -1329,16 +1341,35 @@ public sealed class BaseItemRepository
             ExcludeItemIds = filter.ExcludeItemIds
         };
 
+        // Project to ID before FirstOrDefault to avoid loading full entity including Data blob
         var masterQuery = TranslateQuery(innerQuery, context, outerQueryFilter)
             .GroupBy(e => e.PresentationUniqueKey)
-            .Select(e => e.FirstOrDefault())
-            .Select(e => e!.Id);
+            .Select(g => g.Select(e => e.Id).FirstOrDefault());
 
-        var query = context.BaseItems
-            .Include(e => e.TrailerTypes)
-            .Include(e => e.Provider)
-            .Include(e => e.LockedFields)
-            .Include(e => e.Images)
+        var query = context.BaseItems.AsQueryable();
+
+        // Only include navigation properties that are actually needed based on DtoOptions
+        if (filter.TrailerTypes.Length > 0 || filter.IncludeItemTypes.Contains(BaseItemKind.Trailer))
+        {
+            query = query.Include(e => e.TrailerTypes);
+        }
+
+        if (filter.DtoOptions.ContainsField(ItemFields.ProviderIds))
+        {
+            query = query.Include(e => e.Provider);
+        }
+
+        if (filter.DtoOptions.ContainsField(ItemFields.Settings))
+        {
+            query = query.Include(e => e.LockedFields);
+        }
+
+        if (filter.DtoOptions.EnableImages)
+        {
+            query = query.Include(e => e.Images);
+        }
+
+        query = query
             .AsSingleQuery()
             .Where(e => masterQuery.Contains(e.Id));
 
