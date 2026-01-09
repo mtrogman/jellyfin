@@ -5,16 +5,15 @@ using Microsoft.EntityFrameworkCore.Metadata.Builders;
 namespace Jellyfin.Database.Implementations.ModelConfiguration;
 
 /// <summary>
-/// itemvalues Configuration.
+/// BaseItemImageInfo Configuration.
 /// </summary>
-public class ItemValuesMapConfiguration : IEntityTypeConfiguration<ItemValueMap>
+public class BaseItemImageInfoConfiguration : IEntityTypeConfiguration<BaseItemImageInfo>
 {
     /// <inheritdoc/>
-    public void Configure(EntityTypeBuilder<ItemValueMap> builder)
+    public void Configure(EntityTypeBuilder<BaseItemImageInfo> builder)
     {
-        builder.HasKey(e => new { e.ItemValueId, e.ItemId });
+        builder.HasKey(e => e.Id);
         builder.HasIndex(e => e.ItemId); // Index for queries filtering by ItemId
-        builder.HasOne(e => e.Item);
-        builder.HasOne(e => e.ItemValue);
+        builder.HasOne(e => e.Item).WithMany(e => e.Images).HasForeignKey(e => e.ItemId);
     }
 }
