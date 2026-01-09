@@ -705,11 +705,15 @@ public sealed class BaseItemRepository
             .Select(f => (f.Item, Values: f.Values.Select(e => itemValuesStore.First(g => g.Value == e.Value && g.Type == e.MagicNumber)).DistinctBy(e => e.ItemValueId).ToArray()))
             .ToArray();
 
-        var mappedValues = context.ItemValuesMap.Where(e => ids.Contains(e.ItemId)).ToList();
+        // Use ToLookup for O(1) access per item instead of O(n) filtering per item
+        var mappedValuesLookup = context.ItemValuesMap
+            .Where(e => ids.Contains(e.ItemId))
+            .ToList()
+            .ToLookup(e => e.ItemId);
 
         foreach (var item in valueMap)
         {
-            var itemMappedValues = mappedValues.Where(e => e.ItemId == item.Item.Id).ToList();
+            var itemMappedValues = mappedValuesLookup[item.Item.Id].ToList();
             foreach (var itemValue in item.Values)
             {
                 var existingItem = itemMappedValues.FirstOrDefault(f => f.ItemValueId == itemValue.ItemValueId);
@@ -1625,6 +1629,9 @@ public sealed class BaseItemRepository
             return query.OrderBy(e => e.SortName);
         }
 
+        // Add includes required by sort fields to avoid N+1 queries
+        query = ApplySortIncludes(query, orderBy, filter);
+
         IOrderedQueryable<BaseItemEntity>? orderedQuery = null;
 
         // When searching, prioritize by match quality: exact match > prefix match > contains
@@ -1674,6 +1681,47 @@ public sealed class BaseItemRepository
         }
 
         return orderedQuery ?? query;
+    }
+
+    private static IQueryable<BaseItemEntity> ApplySortIncludes(
+        IQueryable<BaseItemEntity> query,
+        (ItemSortBy OrderBy, SortOrder SortOrder)[] orderBy,
+        InternalItemsQuery filter)
+    {
+        // Sort fields that require UserData to be loaded
+        var userDataSorts = new[]
+        {
+            ItemSortBy.DatePlayed,
+            ItemSortBy.PlayCount,
+            ItemSortBy.IsFavoriteOrLiked,
+            ItemSortBy.IsPlayed,
+            ItemSortBy.IsUnplayed,
+            ItemSortBy.SeriesDatePlayed
+        };
+
+        // Sort fields that require ItemValues to be loaded
+        var itemValuesSorts = new[]
+        {
+            ItemSortBy.Artist,
+            ItemSortBy.AlbumArtist,
+            ItemSortBy.Studio
+        };
+
+        var sortFields = orderBy.Select(o => o.OrderBy).ToArray();
+
+        // Add UserData include if any sort field requires it (and user context exists)
+        if (filter.User is not null && sortFields.Any(s => userDataSorts.Contains(s)))
+        {
+            query = query.Include(e => e.UserData!.Where(ud => ud.UserId == filter.User.Id));
+        }
+
+        // Add ItemValues include if any sort field requires it
+        if (sortFields.Any(s => itemValuesSorts.Contains(s)))
+        {
+            query = query.Include(e => e.ItemValues!).ThenInclude(iv => iv.ItemValue);
+        }
+
+        return query;
     }
 
     private IQueryable<BaseItemEntity> TranslateQuery(
