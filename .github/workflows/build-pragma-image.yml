@@ -25,7 +25,7 @@ jobs:
         shell: bash
         run: |
           echo "IMAGE_NAME=mtrogman/jellyfin" >> $GITHUB_ENV
-          echo "IMAGE_TAG=10.11.5-v2" >> $GITHUB_ENV
+          echo "IMAGE_TAG=10.11.5-v3" >> $GITHUB_ENV
           echo "SHORT_SHA=${GITHUB_SHA::7}" >> $GITHUB_ENV
 
       - name: Set up QEMU
