@@ -17,17 +17,29 @@ COPY . .
 # If your repo already builds clean, you can remove these -p flags.
 ARG DOTNET_BUILD_PROPS="-p:GenerateDocumentationFile=false -p:NoWarn=1591"
 
-# Restore + publish
+# Restore + publish as self-contained to avoid runtime version mismatches
 # NOTE: Jellyfin repo has Jellyfin.Server at repo root. If your path differs, adjust.
-RUN dotnet restore Jellyfin.Server --runtime linux-x64
+ARG TARGETARCH
+RUN RUNTIME_ID=$(case "${TARGETARCH}" in \
+        "amd64") echo "linux-x64" ;; \
+        "arm64") echo "linux-arm64" ;; \
+        *) echo "linux-x64" ;; \
+    esac) && \
+    dotnet restore Jellyfin.Server --runtime ${RUNTIME_ID}
 
-RUN dotnet publish Jellyfin.Server \
+RUN RUNTIME_ID=$(case "${TARGETARCH}" in \
+        "amd64") echo "linux-x64" ;; \
+        "arm64") echo "linux-arm64" ;; \
+        *) echo "linux-x64" ;; \
+    esac) && \
+    dotnet publish Jellyfin.Server \
     -c Release \
     -o /out \
-    -r linux-x64 \
-    --self-contained false \
+    -r ${RUNTIME_ID} \
+    --self-contained true \
     -p:DebugSymbols=false \
     -p:DebugType=none \
+    -p:PublishSingleFile=false \
     ${DOTNET_BUILD_PROPS}
 
 ############################
