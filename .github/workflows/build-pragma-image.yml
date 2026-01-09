@@ -3,7 +3,7 @@ name: Build & Push Jellyfin Docker (pragma tuning)
 on:
   push:
     branches:
-      - trog/sqlite-pragmas-10.11.5
+      - trog/performance-10.11.5
   workflow_dispatch:
 
 permissions:
