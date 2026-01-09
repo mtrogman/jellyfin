@@ -1849,15 +1849,18 @@ public sealed class BaseItemRepository
         if (!string.IsNullOrEmpty(filter.SearchTerm))
         {
             var cleanedSearchTerm = GetCleanValue(filter.SearchTerm);
-            var originalSearchTerm = filter.SearchTerm.ToLower();
+            // Use EF.Functions.Like for case-insensitive search (SQLite LIKE is case-insensitive by default)
+            // Avoid ToLower() which prevents index usage
+            var originalSearchPattern = $"%{filter.SearchTerm}%";
             if (SearchWildcardTerms.Any(f => cleanedSearchTerm.Contains(f)))
             {
                 cleanedSearchTerm = $"%{cleanedSearchTerm.Trim('%')}%";
-                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchTerm) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle.ToLower(), originalSearchTerm)));
+                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchTerm) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, originalSearchPattern)));
             }
             else
             {
-                baseQuery = baseQuery.Where(e => e.CleanName!.Contains(cleanedSearchTerm) || (e.OriginalTitle != null && e.OriginalTitle.ToLower().Contains(originalSearchTerm)));
+                var cleanedSearchPattern = $"%{cleanedSearchTerm}%";
+                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchPattern) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, originalSearchPattern)));
             }
         }
 
@@ -2091,9 +2094,11 @@ public sealed class BaseItemRepository
             }
             else
             {
+                // Use EF.Functions.Like for case-insensitive search without ToLower()
+                var namePattern = $"%{nameContains}%";
                 baseQuery = baseQuery.Where(e =>
-                                    e.CleanName!.Contains(nameContains)
-                                    || e.OriginalTitle!.ToLower().Contains(nameContains!));
+                                    EF.Functions.Like(e.CleanName!, namePattern)
+                                    || EF.Functions.Like(e.OriginalTitle!, namePattern));
             }
         }
 
