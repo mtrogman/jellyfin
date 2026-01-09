@@ -731,33 +731,48 @@ public sealed class BaseItemRepository
 
         context.SaveChanges();
 
-        foreach (var item in tuples)
-        {
-            if (item.Item.SupportsAncestors && item.AncestorIds != null)
-            {
-                var existingAncestorIds = context.AncestorIds.Where(e => e.ItemId == item.Item.Id).ToList();
-                var validAncestorIds = context.BaseItems.Where(e => item.AncestorIds.Contains(e.Id)).Select(f => f.Id).ToArray();
-                foreach (var ancestorId in validAncestorIds)
-                {
-                    var existingAncestorId = existingAncestorIds.FirstOrDefault(e => e.ParentItemId == ancestorId);
-                    if (existingAncestorId is null)
-                    {
-                        context.AncestorIds.Add(new AncestorId()
-                        {
-                            ParentItemId = ancestorId,
-                            ItemId = item.Item.Id,
-                            Item = null!,
-                            ParentItem = null!
-                        });
-                    }
-                    else
-                    {
-                        existingAncestorIds.Remove(existingAncestorId);
-                    }
-                }
+        // Batch load all existing ancestor IDs for all items (instead of querying per-item)
+        var itemsWithAncestors = tuples.Where(t => t.Item.SupportsAncestors && t.AncestorIds != null).ToList();
+        var allItemIdsForAncestors = itemsWithAncestors.Select(t => t.Item.Id).ToList();
+        var allExistingAncestorIds = context.AncestorIds
+            .Where(e => allItemIdsForAncestors.Contains(e.ItemId))
+            .ToList()
+            .ToLookup(e => e.ItemId);
 
-                context.AncestorIds.RemoveRange(existingAncestorIds);
+        // Batch validate all unique ancestor IDs exist in BaseItems (single query instead of per-item)
+        var allAncestorIdsToValidate = itemsWithAncestors
+            .SelectMany(t => t.AncestorIds!)
+            .Distinct()
+            .ToList();
+        var validAncestorIdSet = context.BaseItems
+            .Where(e => allAncestorIdsToValidate.Contains(e.Id))
+            .Select(f => f.Id)
+            .ToHashSet();
+
+        foreach (var item in itemsWithAncestors)
+        {
+            var existingAncestorIds = allExistingAncestorIds[item.Item.Id].ToList();
+            var validAncestorIds = item.AncestorIds!.Where(id => validAncestorIdSet.Contains(id)).ToArray();
+            foreach (var ancestorId in validAncestorIds)
+            {
+                var existingAncestorId = existingAncestorIds.FirstOrDefault(e => e.ParentItemId == ancestorId);
+                if (existingAncestorId is null)
+                {
+                    context.AncestorIds.Add(new AncestorId()
+                    {
+                        ParentItemId = ancestorId,
+                        ItemId = item.Item.Id,
+                        Item = null!,
+                        ParentItem = null!
+                    });
+                }
+                else
+                {
+                    existingAncestorIds.Remove(existingAncestorId);
+                }
             }
+
+            context.AncestorIds.RemoveRange(existingAncestorIds);
         }
 
         context.SaveChanges();
@@ -1371,20 +1386,27 @@ public sealed class BaseItemRepository
             var audioTypeName = _itemTypeLookup.BaseItemKindNames[BaseItemKind.Audio];
             var trailerTypeName = _itemTypeLookup.BaseItemKindNames[BaseItemKind.Trailer];
 
+            // Compute all type counts in a single grouped query instead of 7 separate COUNT() calls per item
+            var typeCounts = itemCountQuery!
+                .GroupBy(f => f.Type)
+                .Select(g => new { Type = g.Key, Count = g.Count() })
+                .ToDictionary(x => x.Type, x => x.Count);
+
+            var itemCounts = new ItemCounts()
+            {
+                SeriesCount = typeCounts.GetValueOrDefault(seriesTypeName, 0),
+                EpisodeCount = typeCounts.GetValueOrDefault(episodeTypeName, 0),
+                MovieCount = typeCounts.GetValueOrDefault(movieTypeName, 0),
+                AlbumCount = typeCounts.GetValueOrDefault(musicAlbumTypeName, 0),
+                ArtistCount = typeCounts.GetValueOrDefault(musicArtistTypeName, 0),
+                SongCount = typeCounts.GetValueOrDefault(audioTypeName, 0),
+                TrailerCount = typeCounts.GetValueOrDefault(trailerTypeName, 0),
+            };
+
             var resultQuery = query.Select(e => new
             {
                 item = e,
-                // TODO: This is bad refactor!
-                itemCount = new ItemCounts()
-                {
-                    SeriesCount = itemCountQuery!.Count(f => f.Type == seriesTypeName),
-                    EpisodeCount = itemCountQuery!.Count(f => f.Type == episodeTypeName),
-                    MovieCount = itemCountQuery!.Count(f => f.Type == movieTypeName),
-                    AlbumCount = itemCountQuery!.Count(f => f.Type == musicAlbumTypeName),
-                    ArtistCount = itemCountQuery!.Count(f => f.Type == musicArtistTypeName),
-                    SongCount = itemCountQuery!.Count(f => f.Type == audioTypeName),
-                    TrailerCount = itemCountQuery!.Count(f => f.Type == trailerTypeName),
-                }
+                itemCount = itemCounts
             });
 
             result.StartIndex = filter.StartIndex ?? 0;
