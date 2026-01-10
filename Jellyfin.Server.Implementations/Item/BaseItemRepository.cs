@@ -458,16 +458,7 @@ public sealed class BaseItemRepository
 
         if (filter.DtoOptions.EnableUserData)
         {
-            // Use filtered include to only load the current user's data instead of all users' data
-            if (filter.User is not null)
-            {
-                var userId = filter.User.Id;
-                dbQuery = dbQuery.Include(e => e.UserData!.Where(ud => ud.UserId == userId));
-            }
-            else
-            {
-                dbQuery = dbQuery.Include(e => e.UserData);
-            }
+            dbQuery = dbQuery.Include(e => e.UserData);
         }
 
         if (filter.DtoOptions.EnableImages)
@@ -1311,14 +1302,18 @@ public sealed class BaseItemRepository
             IsSeries = filter.IsSeries
         });
 
-        // Use Any() with inline predicate instead of Contains() on subquery
-        // This keeps the entire query server-side and prevents client-side evaluation
+        var itemValuesQuery = context.ItemValues
+            .Where(f => itemValueTypes.Contains(f.Type))
+            .SelectMany(f => f.BaseItemsMap!, (f, w) => new { f, w })
+            .Join(
+                innerQueryFilter,
+                fw => fw.w.ItemId,
+                g => g.Id,
+                (fw, g) => fw.f.CleanValue);
+
         var innerQuery = PrepareItemQuery(context, filter)
             .Where(e => e.Type == returnType)
-            .Where(e => context.ItemValuesMap
-                .Where(ivm => itemValueTypes.Contains(ivm.ItemValue.Type))
-                .Where(ivm => innerQueryFilter.Any(g => g.Id == ivm.ItemId))
-                .Any(ivm => ivm.ItemValue.CleanValue == e.CleanName));
+            .Where(e => itemValuesQuery.Contains(e.CleanName));
 
         var outerQueryFilter = new InternalItemsQuery(filter.User)
         {
