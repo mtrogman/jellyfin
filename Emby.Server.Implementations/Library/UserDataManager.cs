@@ -60,30 +60,17 @@ namespace Emby.Server.Implementations.Library
             using var dbContext = _repository.CreateDbContext();
             using var transaction = dbContext.Database.BeginTransaction();
 
-            // Batch load all existing entries for these keys in a single query instead of N queries
-            var existingEntries = dbContext.UserData
-                .Where(f => f.ItemId == item.Id && f.UserId == user.Id && keys.Contains(f.CustomDataKey))
-                .ToDictionary(e => e.CustomDataKey ?? string.Empty);
-
             foreach (var key in keys)
             {
                 userData.Key = key;
-                if (existingEntries.TryGetValue(key, out var existing))
+                var userDataEntry = Map(userData, user.Id, item.Id);
+                if (dbContext.UserData.Any(f => f.ItemId == userDataEntry.ItemId && f.UserId == userDataEntry.UserId && f.CustomDataKey == userDataEntry.CustomDataKey))
                 {
-                    // Update existing entity directly instead of attaching a new one
-                    existing.AudioStreamIndex = userData.AudioStreamIndex;
-                    existing.IsFavorite = userData.IsFavorite;
-                    existing.LastPlayedDate = userData.LastPlayedDate;
-                    existing.Likes = userData.Likes;
-                    existing.PlaybackPositionTicks = userData.PlaybackPositionTicks;
-                    existing.PlayCount = userData.PlayCount;
-                    existing.Played = userData.Played;
-                    existing.Rating = userData.Rating;
-                    existing.SubtitleStreamIndex = userData.SubtitleStreamIndex;
+                    dbContext.UserData.Attach(userDataEntry).State = EntityState.Modified;
                 }
                 else
                 {
-                    dbContext.UserData.Add(Map(userData, user.Id, item.Id));
+                    dbContext.UserData.Add(userDataEntry);
                 }
             }
 
@@ -93,15 +80,7 @@ namespace Emby.Server.Implementations.Library
             var userId = user.InternalId;
             var cacheKey = GetCacheKey(userId, item.Id);
             _cache.AddOrUpdate(cacheKey, userData);
-
-            // Only rehydrate if there are tracked UserData entries, otherwise query
-            var trackedUserData = dbContext.ChangeTracker.Entries<UserData>()
-                .Where(e => e.Entity.ItemId == item.Id)
-                .Select(e => e.Entity)
-                .ToArray();
-            item.UserData = trackedUserData.Length > 0
-                ? trackedUserData
-                : dbContext.UserData.Where(e => e.ItemId == item.Id).AsNoTracking().ToArray();
+            item.UserData = dbContext.UserData.Where(e => e.ItemId == item.Id).AsNoTracking().ToArray(); // rehydrate the cached userdata
 
             UserDataSaved?.Invoke(this, new UserDataSaveEventArgs
             {

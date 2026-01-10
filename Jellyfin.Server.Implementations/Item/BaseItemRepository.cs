@@ -409,24 +409,17 @@ public sealed class BaseItemRepository
         var enableGroupByPresentationUniqueKey = EnableGroupByPresentationUniqueKey(filter);
         if (enableGroupByPresentationUniqueKey && filter.GroupBySeriesPresentationUniqueKey)
         {
-            // Project to ID before FirstOrDefault to avoid loading full entity including Data blob
-            var tempQuery = dbQuery
-                .GroupBy(e => new { e.PresentationUniqueKey, e.SeriesPresentationUniqueKey })
-                .Select(g => g.Select(e => e.Id).FirstOrDefault());
+            var tempQuery = dbQuery.GroupBy(e => new { e.PresentationUniqueKey, e.SeriesPresentationUniqueKey }).Select(e => e.FirstOrDefault()).Select(e => e!.Id);
             dbQuery = context.BaseItems.Where(e => tempQuery.Contains(e.Id));
         }
         else if (enableGroupByPresentationUniqueKey)
         {
-            var tempQuery = dbQuery
-                .GroupBy(e => e.PresentationUniqueKey)
-                .Select(g => g.Select(e => e.Id).FirstOrDefault());
+            var tempQuery = dbQuery.GroupBy(e => e.PresentationUniqueKey).Select(e => e.FirstOrDefault()).Select(e => e!.Id);
             dbQuery = context.BaseItems.Where(e => tempQuery.Contains(e.Id));
         }
         else if (filter.GroupBySeriesPresentationUniqueKey)
         {
-            var tempQuery = dbQuery
-                .GroupBy(e => e.SeriesPresentationUniqueKey)
-                .Select(g => g.Select(e => e.Id).FirstOrDefault());
+            var tempQuery = dbQuery.GroupBy(e => e.SeriesPresentationUniqueKey).Select(e => e.FirstOrDefault()).Select(e => e!.Id);
             dbQuery = context.BaseItems.Where(e => tempQuery.Contains(e.Id));
         }
         else
@@ -1655,9 +1648,6 @@ public sealed class BaseItemRepository
             return query.OrderBy(e => e.SortName);
         }
 
-        // Add includes required by sort fields to avoid N+1 queries
-        query = ApplySortIncludes(query, orderBy, filter);
-
         IOrderedQueryable<BaseItemEntity>? orderedQuery = null;
 
         // When searching, prioritize by match quality: exact match > prefix match > contains
@@ -1707,47 +1697,6 @@ public sealed class BaseItemRepository
         }
 
         return orderedQuery ?? query;
-    }
-
-    private static IQueryable<BaseItemEntity> ApplySortIncludes(
-        IQueryable<BaseItemEntity> query,
-        (ItemSortBy OrderBy, SortOrder SortOrder)[] orderBy,
-        InternalItemsQuery filter)
-    {
-        // Sort fields that require UserData to be loaded
-        var userDataSorts = new[]
-        {
-            ItemSortBy.DatePlayed,
-            ItemSortBy.PlayCount,
-            ItemSortBy.IsFavoriteOrLiked,
-            ItemSortBy.IsPlayed,
-            ItemSortBy.IsUnplayed,
-            ItemSortBy.SeriesDatePlayed
-        };
-
-        // Sort fields that require ItemValues to be loaded
-        var itemValuesSorts = new[]
-        {
-            ItemSortBy.Artist,
-            ItemSortBy.AlbumArtist,
-            ItemSortBy.Studio
-        };
-
-        var sortFields = orderBy.Select(o => o.OrderBy).ToArray();
-
-        // Add UserData include if any sort field requires it (and user context exists)
-        if (filter.User is not null && sortFields.Any(s => userDataSorts.Contains(s)))
-        {
-            query = query.Include(e => e.UserData!.Where(ud => ud.UserId == filter.User.Id));
-        }
-
-        // Add ItemValues include if any sort field requires it
-        if (sortFields.Any(s => itemValuesSorts.Contains(s)))
-        {
-            query = query.Include(e => e.ItemValues!).ThenInclude(iv => iv.ItemValue);
-        }
-
-        return query;
     }
 
     private IQueryable<BaseItemEntity> TranslateQuery(
@@ -1875,18 +1824,15 @@ public sealed class BaseItemRepository
         if (!string.IsNullOrEmpty(filter.SearchTerm))
         {
             var cleanedSearchTerm = GetCleanValue(filter.SearchTerm);
-            // Use EF.Functions.Like for case-insensitive search (SQLite LIKE is case-insensitive by default)
-            // Avoid ToLower() which prevents index usage
-            var originalSearchPattern = $"%{filter.SearchTerm}%";
+            var originalSearchTerm = filter.SearchTerm.ToLower();
             if (SearchWildcardTerms.Any(f => cleanedSearchTerm.Contains(f)))
             {
                 cleanedSearchTerm = $"%{cleanedSearchTerm.Trim('%')}%";
-                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchTerm) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, originalSearchPattern)));
+                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchTerm) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle.ToLower(), originalSearchTerm)));
             }
             else
             {
-                var cleanedSearchPattern = $"%{cleanedSearchTerm}%";
-                baseQuery = baseQuery.Where(e => EF.Functions.Like(e.CleanName!, cleanedSearchPattern) || (e.OriginalTitle != null && EF.Functions.Like(e.OriginalTitle, originalSearchPattern)));
+                baseQuery = baseQuery.Where(e => e.CleanName!.Contains(cleanedSearchTerm) || (e.OriginalTitle != null && e.OriginalTitle.ToLower().Contains(originalSearchTerm)));
             }
         }
 
