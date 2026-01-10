@@ -230,9 +230,8 @@ public class PeopleRepository(IDbContextFactory<JellyfinDbContext> dbProvider, I
 
         if (!string.IsNullOrWhiteSpace(filter.NameContains))
         {
-            // Use EF.Functions.Like for case-insensitive search without ToUpper()
-            var namePattern = $"%{filter.NameContains}%";
-            query = query.Where(e => EF.Functions.Like(e.Name, namePattern));
+            var nameContainsUpper = filter.NameContains.ToUpper();
+            query = query.Where(e => e.Name.ToUpper().Contains(nameContainsUpper));
         }
 
         return query;
