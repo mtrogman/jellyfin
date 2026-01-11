@@ -207,6 +207,7 @@
  - [TokerX](https://github.com/TokerX)
  - [GeneMarks](https://github.com/GeneMarks)
  - [martenumberto](https://github.com/martenumberto)
+ - [mtrogman](https://github.com/mtrogman)
 
 # Emby Contributors
 
