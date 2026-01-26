@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1.7
 
-ARG JELLYFIN_BASE_TAG=10.11.5
+ARG JELLYFIN_BASE_TAG=10.11.6
 ARG DOTNET_SDK_TAG=9.0
 
 ############################
