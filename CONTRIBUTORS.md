@@ -208,6 +208,7 @@
  - [GeneMarks](https://github.com/GeneMarks)
  - [martenumberto](https://github.com/martenumberto)
  - [mtrogman](https://github.com/mtrogman)
+ - [MarcoCoreDuo](https://github.com/MarcoCoreDuo)
 
 # Emby Contributors
 
