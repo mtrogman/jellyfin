@@ -101,11 +101,11 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             return ms;
         }
 
-        private void FilterEvents(SubtitleTrackInfo track, long startPositionTicks, long endTimeTicks, bool preserveTimestamps)
+        internal void FilterEvents(SubtitleTrackInfo track, long startPositionTicks, long endTimeTicks, bool preserveTimestamps)
         {
-            // Drop subs that are earlier than what we're looking for
+            // Drop subs that have fully elapsed before the requested start position
             track.TrackEvents = track.TrackEvents
-                .SkipWhile(i => (i.StartPositionTicks - startPositionTicks) < 0 || (i.EndPositionTicks - startPositionTicks) < 0)
+                .SkipWhile(i => (i.StartPositionTicks - startPositionTicks) < 0 && (i.EndPositionTicks - startPositionTicks) < 0)
                 .ToArray();
 
             if (endTimeTicks > 0)
@@ -119,8 +119,8 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             {
                 foreach (var trackEvent in track.TrackEvents)
                 {
-                    trackEvent.EndPositionTicks -= startPositionTicks;
-                    trackEvent.StartPositionTicks -= startPositionTicks;
+                    trackEvent.EndPositionTicks = Math.Max(0, trackEvent.EndPositionTicks - startPositionTicks);
+                    trackEvent.StartPositionTicks = Math.Max(0, trackEvent.StartPositionTicks - startPositionTicks);
                 }
             }
         }
@@ -147,7 +147,10 @@ namespace MediaBrowser.MediaEncoding.Subtitles
 
             // Return the original if the same format is being requested
             // Character encoding was already handled in GetSubtitleStream
-            if (string.Equals(inputFormat, outputFormat, StringComparison.OrdinalIgnoreCase))
+            // ASS is a superset of SSA, skipping the conversion and preserving the styles
+            if (string.Equals(inputFormat, outputFormat, StringComparison.OrdinalIgnoreCase)
+                || (string.Equals(inputFormat, SubtitleFormat.SSA, StringComparison.OrdinalIgnoreCase)
+                    && string.Equals(outputFormat, SubtitleFormat.ASS, StringComparison.OrdinalIgnoreCase)))
             {
                 return stream;
             }
@@ -187,10 +190,10 @@ namespace MediaBrowser.MediaEncoding.Subtitles
 
                     await using (stream.ConfigureAwait(false))
                     {
-                      using var reader = new StreamReader(stream, detected.Encoding);
-                      var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
+                        using var reader = new StreamReader(stream, detected.Encoding);
+                        var text = await reader.ReadToEndAsync(cancellationToken).ConfigureAwait(false);
 
-                      return new MemoryStream(Encoding.UTF8.GetBytes(text));
+                        return new MemoryStream(Encoding.UTF8.GetBytes(text));
                     }
                 }
             }
@@ -209,7 +212,8 @@ namespace MediaBrowser.MediaEncoding.Subtitles
 
                 var outputFileExtension = GetExtractableSubtitleFileExtension(subtitleStream);
                 var outputFormat = GetExtractableSubtitleFormat(subtitleStream);
-                var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + outputFileExtension);
+                var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + outputFileExtension)
+                    ?? throw new ResourceNotFoundException($"MediaSource {mediaSource.Id} has no subtitle cache (non-GUID Id, e.g. Live TV stream).");
 
                 return new SubtitleInfo()
                 {
@@ -239,7 +243,8 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             if (!_subtitleParser.SupportsFileExtension(currentFormat))
             {
                 // Convert
-                var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, ".srt");
+                var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, ".srt")
+                    ?? throw new ResourceNotFoundException($"MediaSource {mediaSource.Id} has no subtitle cache (non-GUID Id, e.g. Live TV stream).");
 
                 await ConvertTextSubtitleToSrt(subtitleStream, mediaSource, outputPath, cancellationToken).ConfigureAwait(false);
 
@@ -517,6 +522,10 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                     }
 
                     var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + GetExtractableSubtitleFileExtension(subtitleStream));
+                    if (outputPath is null)
+                    {
+                        continue;
+                    }
 
                     var releaser = await _semaphoreLocks.LockAsync(outputPath, cancellationToken).ConfigureAwait(false);
 
@@ -588,6 +597,11 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                     }
 
                     var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + GetExtractableSubtitleFileExtension(subtitleStream));
+                    if (outputPath is null)
+                    {
+                        continue;
+                    }
+
                     var outputCodec = IsCodecCopyable(subtitleStream.Codec) ? "copy" : "srt";
                     var streamIndex = EncodingHelper.FindIndex(mediaSource.MediaStreams, subtitleStream);
 
@@ -633,6 +647,11 @@ namespace MediaBrowser.MediaEncoding.Subtitles
                 }
 
                 var outputPath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + GetExtractableSubtitleFileExtension(subtitleStream));
+                if (outputPath is null)
+                {
+                    continue;
+                }
+
                 var outputCodec = IsCodecCopyable(subtitleStream.Codec) ? "copy" : "srt";
                 var streamIndex = EncodingHelper.FindIndex(mediaSource.MediaStreams, subtitleStream);
 
@@ -965,7 +984,7 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             }
         }
 
-        private string GetSubtitleCachePath(MediaSourceInfo mediaSource, int subtitleStreamIndex, string outputSubtitleExtension)
+        private string? GetSubtitleCachePath(MediaSourceInfo mediaSource, int subtitleStreamIndex, string outputSubtitleExtension)
         {
             return _pathManager.GetSubtitlePath(mediaSource.Id, subtitleStreamIndex, outputSubtitleExtension);
         }
@@ -978,9 +997,13 @@ namespace MediaBrowser.MediaEncoding.Subtitles
 
             if (path.EndsWith(".mks", StringComparison.OrdinalIgnoreCase))
             {
-                path = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + subtitleCodec);
-                await ExtractTextSubtitle(mediaSource, subtitleStream, subtitleCodec, path, cancellationToken)
-                    .ConfigureAwait(false);
+                var cachePath = GetSubtitleCachePath(mediaSource, subtitleStream.Index, "." + subtitleCodec);
+                if (cachePath is not null)
+                {
+                    path = cachePath;
+                    await ExtractTextSubtitle(mediaSource, subtitleStream, subtitleCodec, path, cancellationToken)
+                        .ConfigureAwait(false);
+                }
             }
 
             var result = await DetectCharset(path, mediaSource.Protocol, cancellationToken).ConfigureAwait(false);
@@ -1004,20 +1027,20 @@ namespace MediaBrowser.MediaEncoding.Subtitles
             switch (protocol)
             {
                 case MediaProtocol.Http:
-                {
-                    using var stream = await _httpClientFactory
-                      .CreateClient(NamedClient.Default)
-                      .GetStreamAsync(new Uri(path), cancellationToken)
-                      .ConfigureAwait(false);
+                    {
+                        using var stream = await _httpClientFactory
+                          .CreateClient(NamedClient.Default)
+                          .GetStreamAsync(new Uri(path), cancellationToken)
+                          .ConfigureAwait(false);
 
-                    return await CharsetDetector.DetectFromStreamAsync(stream, cancellationToken).ConfigureAwait(false);
-                }
+                        return await CharsetDetector.DetectFromStreamAsync(stream, cancellationToken).ConfigureAwait(false);
+                    }
 
                 case MediaProtocol.File:
-                {
-                    return await CharsetDetector.DetectFromFileAsync(path, cancellationToken)
-                                          .ConfigureAwait(false);
-                }
+                    {
+                        return await CharsetDetector.DetectFromFileAsync(path, cancellationToken)
+                                              .ConfigureAwait(false);
+                    }
 
                 default:
                     throw new ArgumentOutOfRangeException(nameof(protocol), protocol, "Unsupported protocol");
